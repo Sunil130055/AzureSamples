@@ -1,0 +1,235 @@
+
+#Process controls
+$re_login   		 = $false
+$redo_all   		 = $false 					#when true, the calculated range will override the settings below
+$skip_ready 		 = $false 					#Basically, any "Ready" slices will be ignored i.e. done, will be ignored
+$Subscription_ID     = "<Azure Data Factory Gen1 Subscription ID>"
+$ResourceGroup_Name  = "<Azure Data Factory Gen1 Resource Group Name>"    
+$DataFactory_Name    = "<Azure Data Factory Gen1 Name>"
+$Start_DateTime      = "<Start DateTime>" 		#"2021-12-28T01:00:00.0000000"
+$End_DateTime        = "<End DateTime>"   		#"2021-12-28T01:00:00.0000000"
+
+#This must be true to do the update, otherwise you get a listing of current values
+$Update_RunType = "Individual"  #Individual, UpstreamInPipeline  #Generally use upstream depending on the choices of dataset name
+
+
+$Set_Pipeline_Status = "Waiting" #Failed, InProgress, Ready, Skipped, Waiting #generally use waiting
+
+
+#SET TO TRUE TO UPDATE THE DATA AND GIVES LIST WHEN SET TO FALSE
+$Do_Update=$false 
+
+# List all DataSets in the data factory - Add the LIKE filter by name instead of * if needed such as *output*
+#This bit controls what is selected
+$DataSet_Name= "*<Dataset name>*"
+$DataSet_Name2=$null
+
+#don't change below here
+#=======================
+if ($account -eq $null -or $re_login -eq $true) {
+    $account=Login-AzureRmAccount                                                                                                                                      
+}
+
+$sub = Get-AzureRmSubscription -SubscriptionId $Subscription_ID        
+$thissub=set-AzureRmContext -SubscriptionObject $sub
+
+$df=Get-AzureRmDataFactory -Name $DataFactory_Name -ResourceGroupName $ResourceGroup_Name
+
+write-host "*******************Result**************************"
+write-host ""
+
+
+$DataSets = Get-AzureRmDataFactoryDataset -DataFactory $df | Where {$_.DatasetName -like $DataSet_Name} | Sort-Object DatasetName
+
+
+# Loop over matching named DataSets
+$i = 1
+ForEach($DS in $DataSets) {
+
+   
+Write-Host $DS.DataFactoryName "--> " $DS.DatasetName -ForegroundColor:Green
+
+if ($redo_all -eq $true) {
+
+        #initialise to ensure correct in debugging sessions
+        $First_Slice=$null
+		$Start_DateTime=$null
+        $End_DateTime=$null
+        $Last_Slice=$null
+        $Prev_Slice=$null        
+
+
+        #Assume nothing before 2005
+        $Slice_Start=get-date "2005-01-01T00:00:00.0000000"
+
+        do {
+
+            $Slice_End=$Slice_Start.AddYears(1)
+            $thisslice=$null
+
+            if ($First_Slice -eq $null) {
+                $thisslice=Get-AzureRmDataFactorySlice -DataFactory $df -DatasetName $DS.DatasetName -StartDateTime $Slice_Start -EndDateTime $Slice_End -WarningAction SilentlyContinue | Select-Object -First 1
+               
+                $First_Slice=$thisslice.Start
+            }
+
+            if ($First_Slice -ne $null -and $Last_Slice -eq $null) {
+                $thisslice=$null
+                $thisslice=Get-AzureRmDataFactorySlice -DataFactory $df -DatasetName $DS.DatasetName -StartDateTime $Slice_Start -EndDateTime $Slice_End -WarningAction SilentlyContinue |  Select-Object -last 1
+
+                if ($thisslice -ne $null) {
+                    $Prev_Slice=$thisslice.Start
+                }
+                else {
+                    $Last_Slice=$Slice_Start
+                }
+            }
+
+            $Slice_Start=$Slice_Start.AddYears(1)
+
+        } while ($First_Slice -eq $null -or $Last_Slice -eq $null)
+
+
+        $Start_DateTime=$First_Slice
+        $End_DateTime=$Last_Slice
+
+    }
+
+
+# List slices
+    if ($skip_ready -eq $false) {
+   $Slices = Get-AzureRmDataFactorySlice -DataFactory $df -DatasetName $DS.DatasetName -StartDateTime $Start_DateTime -EndDateTime $End_DateTime
+    }
+    else {
+        $Slices = Get-AzureRmDataFactorySlice -DataFactory $df -DatasetName $DS.DatasetName -StartDateTime $Start_DateTime -EndDateTime $End_DateTime | Where-Object {$_.State -ne "Ready"}
+    }
+
+# Reset all slices to status Waiting for the given dataset, in case there are multiple
+ForEach($S in $Slices)
+{
+$outcome=$false
+
+    Write-Host $i ":" $DS.DataFactoryName "--> " $DS.DatasetName "--> Slice Start:["$S.Start"] End:["$S.End"] State:"$S.State $S.SubState -ForegroundColor:Cyan
+if ($Do_Update -eq $true) {
+
+Try {
+
+$outcome=Set-AzureRmDataFactorySliceStatus -DataFactory $df -DatasetName $DS.DatasetName -Status $Set_Pipeline_Status -UpdateType $Update_RunType -StartDateTime $S.Start -EndDateTime $S.End
+
+Write-Host " Reset Status " $Set_Pipeline_Status " Outcome :" $outcome -ForegroundColor:Green
+
+}
+Catch
+{
+Write-Host " Failed with Error: " $_ -ForegroundColor:Red
+}
+
+}
+
+$i++
+
+}
+
+
+}
+
+if ($DataSet_Name2 -ne $null) {
+
+ 
+    $DataSet_Name=$DataSet_Name2
+
+    $DataSets = Get-AzureRmDataFactoryDataset -DataFactory $df | Where {$_.DatasetName -like $DataSet_Name} | Sort-Object DatasetName
+
+
+    # Loop over matching named DataSets
+    $i = 1
+    ForEach($DS in $DataSets) {
+
+   
+   Write-Host $DS.DataFactoryName "--> " $DS.DatasetName -ForegroundColor:Green
+
+   if ($redo_all -eq $true) {
+
+            #initialise to ensure correct in debugging sessions
+            $Start_DateTime=$null
+            $End_DateTime=$null
+            $First_Slice=$null
+            $Last_Slice=$null
+            $Prev_Slice=$null
+
+            #Assume nothing before year 2000
+            $Slice_Start=get-date "2000-01-01T00:00:00.0000000"
+
+            do {
+
+                $Slice_End=$Slice_Start.AddYears(1)
+                $thisslice=$null
+
+                if ($First_Slice -eq $null) {
+                    $thisslice=Get-AzureRmDataFactorySlice -DataFactory $df -DatasetName $DS.DatasetName -StartDateTime $Slice_Start -EndDateTime $Slice_End -WarningAction SilentlyContinue | Select-Object -First 1
+               
+                    #| Select-Object -property Start
+                    $First_Slice=$thisslice.Start
+                }
+
+                if ($First_Slice -ne $null -and $Last_Slice -eq $null) {
+                    $thisslice=$null
+                    $thisslice=Get-AzureRmDataFactorySlice -DataFactory $df -DatasetName $DS.DatasetName -StartDateTime $Slice_Start -EndDateTime $Slice_End -WarningAction SilentlyContinue |  Select-Object -last 1
+                    #| Select-Object -property Start
+                    if ($thisslice -ne $null) {
+                        $Prev_Slice=$thisslice.Start
+                    }
+                    else {
+                        $Last_Slice=$Slice_Start
+                    }
+                }
+
+                $Slice_Start=$Slice_Start.AddYears(1)
+
+            } while ($First_Slice -eq $null -or $Last_Slice -eq $null)
+
+
+            $Start_DateTime=$First_Slice
+            $End_DateTime=$Last_Slice
+
+        }
+
+
+   # List slices
+        if ($skip_ready -eq $false) {
+       $Slices = Get-AzureRmDataFactorySlice -DataFactory $df -DatasetName $DS.DatasetName -StartDateTime $Start_DateTime -EndDateTime $End_DateTime
+        }
+        else {
+            $Slices = Get-AzureRmDataFactorySlice -DataFactory $df -DatasetName $DS.DatasetName -StartDateTime $Start_DateTime -EndDateTime $End_DateTime | Where-Object {$_.State -ne "Ready"}
+        }
+
+   # Reset all slices to status Waiting for the given dataset, in case there are multiple
+   ForEach($S in $Slices)
+   {
+   $outcome=$false
+
+       Write-Host $i ":" $DS.DataFactoryName "--> " $DS.DatasetName "--> Slice Start:["$S.Start"] End:["$S.End"] State:"$S.State $S.SubState -ForegroundColor:Cyan
+   if ($Do_Update -eq $true) {
+
+   Try {
+
+   $outcome=Set-AzureRmDataFactorySliceStatus -DataFactory $df -DatasetName $DS.DatasetName -Status $Set_Pipeline_Status -UpdateType $Update_RunType -StartDateTime $S.Start -EndDateTime $S.End
+
+   Write-Host " Slice status reset to " $Set_Pipeline_Status " Outcome :" $outcome -ForegroundColor:Green
+
+   }
+   Catch
+   {
+   Write-Host " Slice status reset has failed. Error: " $_ -ForegroundColor:Red
+   }
+
+   }
+
+   $i++
+
+   }
+
+
+    }
+
+}
